@@ -1,0 +1,284 @@
+---
+title: "Markov Chain Monte Carlo: The Metropolis-Hastings Algorithm"
+author: "220308193"
+date: "2026-02-24"
+output: "HTML"
+---
+
+## Target Distribution
+
+The target density is the **Laplace (double-exponential)** distribution:
+$$f(x) = \frac{1}{2}\,e^{-|x|}, \quad x \in \mathbb{R}$$
+True mean = **0**, true standard deviation = $\sqrt{2} \approx 1.4142$.
+
+**Why this distribution?**  
+The Laplace distribution is symmetric around zero and has heavier tails than the Normal distribution, meaning extreme values (far from 0) are more likely than in a bell curve. The $\frac{1}{2}$ is a normalising constant — it ensures the total area under the curve equals 1, as required for any valid probability density. Directly sampling from this distribution is possible, but we deliberately use MCMC here to learn the technique in a controlled setting where we can verify our results against the known truth.
+
+---
+
+## Setup — Sampler and Target Density
+
+**What we are building:**  
+Before running the algorithm, we define two key building blocks:
+
+1. `f(x)` — the target density we want to sample from.
+2. `log_f(x)` — the **log** of the density. We work in log-space throughout because multiplying many tiny probabilities together leads to numerical underflow (numbers too small for the computer to distinguish from zero). Taking logs turns products into sums, which are numerically safe.
+
+The `rwm()` function below is the heart of the algorithm. It takes three inputs:
+- **N** — how many samples to generate (the chain length).
+- **s** — how big a random step to propose at each iteration. Think of this as the "step size" of a random walk.
+- **x0** — where the chain starts. After enough iterations, the starting point doesn't matter — the chain "forgets" it.
+
+```{r setup}
+set.seed(42)
+
+f     <- function(x) 0.5 * exp(-abs(x))
+log_f <- function(x) log(0.5) - abs(x)    # log-density for numerical stability
+
+# Random Walk Metropolis — returns chain [x0, x1, ..., xN]
+rwm <- function(N, s, x0 = 0.0, seed = 42){
+  
+  # Run Random Walk Metropolis for N steps.
+  # Proposal: x* ~ Normal(x_{i-1}, s)
+  # Acceptance: log(u) < log f(x*) - log f(x_{i-1})
+  # Returns chain of length N+1 (including x0).
+  
+  set.seed(21)
+  chain    <- numeric(N + 1)
+  chain[1] <- x0
+  for (i in 1:N) {
+    x_star        <- rnorm(1, mean = chain[i], sd = s)
+    log_r         <- log_f(x_star) - log_f(chain[i])   # log acceptance ratio
+    log_u         <- log(runif(1))                      # log uniform draw
+    chain[i + 1]  <- if (log_u < log_r) x_star else chain[i]
+  }
+  return(chain)
+}
+
+```
+
+**How the acceptance step works intuitively:**  
+At each step, the algorithm proposes a move from the current position $x_{i-1}$ to a nearby candidate $x^*$, drawn from a Normal distribution centred at $x_{i-1}$.
+
+- If $x^*$ is in a **denser region** of $f(x)$ than the current position, the ratio $r = f(x^*)/f(x_{i-1}) > 1$, so the move is **always accepted** — we are heading somewhere more probable.
+- If $x^*$ is in a **less dense region**, $r < 1$ and the move is accepted only with probability $r$. This means the chain occasionally ventures into lower-probability territory, which is essential for proper exploration.
+
+Over thousands of iterations, the chain visits each region of the real line in proportion to $f(x)$ — that is the magic of MCMC.
+
+---
+
+## Part 1(a) — Density Estimation (N = 10,000, s = 1)
+
+**Goal:** Run the sampler and check whether the 10,000 collected samples actually look like draws from $f(x)$.
+
+We do this visually (histogram + KDE overlaid with the true density) and numerically (comparing the sample mean and standard deviation to the known theoretical values of 0 and $\sqrt{2}$).
+
+**What is a Kernel Density Estimate (KDE)?**  
+A histogram is a rough, blocky approximation of a density. A KDE smooths it out by placing a small "bump" (kernel) at each data point and summing them up. The result is a continuous curve that closely follows the shape of the underlying distribution — generally a better visual summary than a histogram alone.
+
+```{r part1a-run}
+cat(strrep("=", 55), "\n")
+cat("PART 1(a)  --  N=10,000, s=1\n")
+cat(strrep("=", 55), "\n")
+
+N_a          <- 10000;  s_a <- 1.0
+full_chain_a <- rwm(N_a, s_a, x0 = 0.0, seed = 42)
+samples      <- full_chain_a[-1]          # x1 ... x_N  (drop x0)
+
+mc_mean <- mean(samples)
+mc_std  <- sd(samples)
+cat(sprintf("  Monte Carlo mean  : %+.4f   (true = 0.0000)\n", mc_mean))
+cat(sprintf("  Monte Carlo std   :  %.4f   (true = sqrt(2) = %.4f)\n",
+            mc_std, sqrt(2)))
+```
+
+**Reading the output:**  
+The printed mean and standard deviation are our **Monte Carlo estimates** — numerical summaries derived entirely from the simulated chain. A mean close to 0 and a standard deviation close to 1.4142 confirms the sampler is correctly exploring $f(x)$. Any large discrepancy would signal a problem with the algorithm or the choice of $s$.
+
+```{r part1a-plot,}
+x_grid   <- seq(-8, 8, length.out = 800)
+kde      <- density(samples, bw = "nrd0") #soctts rule
+
+fig_hist <- hist(samples, breaks = 100, plot = FALSE)
+ylim_max <- max(max(fig_hist$density), max(kde$y), max(f(x_grid))) * 1.06
+
+hist(samples, breaks = 100, freq = FALSE,
+     col    = adjustcolor("#4C9BE8", alpha.f = 0.35),
+     border = NA,
+     xlim   = c(-7, 7),
+     ylim   = c(0, ylim_max),
+     main   = sprintf(
+       "Part 1(a): Random Walk Metropolis  (N = %s, s = %.1f)\nMonte Carlo mean = %+.4f,  std = %.4f",
+       format(N_a, big.mark = ","), s_a, mc_mean, mc_std),
+     xlab   = "x",
+     ylab   = "Density",
+     cex.lab  = 1.15,
+     cex.main = 1.0)
+
+lines(kde,                                              # Kernel density estimate (KDE)
+      col = "#2166AC", lwd = 2.2)
+
+lines(x_grid, f(x_grid),                               # True density f(x) = 0.5 * exp(-|x|)
+      col = "#D6604D", lwd = 2.5, lty = 2)
+
+legend("topright",
+       legend = c("Histogram of MCMC samples",
+                  "Kernel density estimate (KDE)",
+                  expression("True density  " * f(x) == frac(1, 2) * e^{-abs(x)})),
+       col    = c(adjustcolor("#4C9BE8", 0.6), "#2166AC", "#D6604D"),
+       lwd    = c(8, 2.2, 2.5),
+       lty    = c(1, 1, 2),
+       cex    = 0.9,
+       bty    = "n")
+```
+
+**Reading the plot:**  
+The blue histogram and the solid blue KDE curve should both hug the dashed red true density closely. If the sampler has worked well, all three nearly overlap — which confirms that our 10,000 simulated values are a faithful representation of $f(x)$. Notice the characteristic tent shape (peaked at 0, exponentially decaying on both sides) that defines the Laplace distribution.
+
+The histogram and KDE track the true density closely; Monte Carlo estimates of the mean and std match their theoretical values well.
+
+---
+
+## Part 1(b) — Gelman-Rubin Convergence Diagnostic
+
+**Why do we need a convergence check?**  
+When we run the Random Walk Metropolis algorithm, we hope the chain has "converged" — meaning it has fully explored $f(x)$ and forgotten where it started. But how do we know if it actually has? The **Gelman-Rubin $\hat{R}$ statistic** answers this by running several independent chains simultaneously and checking whether they all agree with each other.
+
+**The intuition:**  
+Imagine four hikers dropped at different starting locations on a mountain, all walking randomly according to the same rules. If the algorithm has converged, all four hikers should end up spending time at the same locations in similar proportions — their paths should look statistically indistinguishable. If the chains have *not* converged (e.g. because the step size $s$ is too small and the hikers barely move), each hiker stays near their starting point and the chains look very different from one another.
+
+$\hat{R}$ captures this by comparing **within-chain variance** (how much each chain varies internally) to **between-chain variance** (how different the chain means are from each other):
+
+$$W = \frac{1}{J}\sum_j V_j, \qquad B = \frac{1}{J}\sum_j(M_j - \bar{M})^2, \qquad \hat{R} = \sqrt{\frac{B+W}{W}}$$
+
+- **W (within-chain variance):** Average variability *inside* each individual chain. Large W means each chain is exploring a wide range of values.  
+- **B (between-chain variance):** Variability *across* the chain means. Small B means all chains have settled around the same region.  
+- **$\hat{R}$:** If $B \approx 0$, then $\hat{R} \approx 1$ — convergence. If chains disagree strongly ($B$ is large relative to $W$), $\hat{R} \gg 1$ — no convergence.
+
+$\hat{R} < 1.05$ is the standard convergence criterion.
+
+```{r r-hat-function}
+cat(strrep("=", 55), "\n")
+cat("PART 1(b)  --  Gelman-Rubin R-hat diagnostic\n")
+cat(strrep("=", 55), "\n")
+
+gelman_rubin <- function(N, s, J = 4,
+                          x0_list = c(-3.0, -1.0, 1.0, 3.0),
+                          seed = 10) {
+  # Compute the Gelman-Rubin R-hat statistic for J chains of length N
+  # with proposal std s, started from dispersed initial values x0_list.
+  chains <- lapply(seq_len(J), function(j) {
+    rwm(N, s, x0 = x0_list[j], seed = seed + j)[-1]   # drop x0
+  })
+
+  # Chain-level statistics
+  M_j <- sapply(chains, mean)                                # chain means
+  V_j <- sapply(chains, function(c) mean((c - mean(c))^2))  # chain variances
+
+  W <- mean(V_j)           # within-chain variance
+  M <- mean(M_j)           # grand mean
+  B <- mean((M_j - M)^2)  # between-chain variance
+
+  return(sqrt((B + W) / W))
+}
+```
+
+**Why start chains at dispersed values?**  
+We deliberately start the four chains at $x_0 \in \{-3, -1, 1, 3\}$ — spread across the real line. This is a stress test: if the algorithm can bring all four chains into agreement *despite* very different starting points, we have strong evidence of convergence. Starting all chains at the same value would make it artificially easy for $\hat{R}$ to look good even when the chain has not truly explored the full distribution.
+
+```{r r-hat-single}
+# -- Single R-hat at required settings ----------------------------------------
+N_b          <- 2000;  J <- 4
+x0_dispersed <- c(-3.0, -1.0, 1.0, 3.0)
+
+rhat_s001 <- gelman_rubin(N_b, 0.001, J = J,
+                           x0_list = x0_dispersed, seed = 10)
+cat(sprintf("  R-hat at s = 0.001 (N=%d, J=%d) : %.4f\n", N_b, J, rhat_s001))
+cat("  Interpretation: far above 1.05 -> algorithm NOT converged at s=0.001\n")
+
+# -- R-hat across a grid of s values ------------------------------------------
+s_grid <- seq(0.001, 1.0, length.out = 80)
+rhats  <- sapply(s_grid, function(s) {
+  gelman_rubin(N_b, s, J = J, x0_list = x0_dispersed, seed = 10)
+})
+
+# First s where R-hat < 1.05
+converge_entries <- which(rhats < 1.05)
+if (length(converge_entries) > 0) {
+  s_conv <- s_grid[converge_entries[1]]
+  r_conv <- rhats[converge_entries[1]]
+  cat(sprintf("  R-hat first drops below 1.05 at s = %.3f  (R-hat = %.4f)\n",
+              s_conv, r_conv))
+}
+
+```
+
+**Reading the single $\hat{R}$ result:**  
+At $s = 0.001$, each proposal barely moves ($x^* \approx x_{i-1}$ almost every time). Each chain is effectively frozen near its starting point. Since the four chains started far apart, their means $M_j$ are very different — giving a huge $B$ and therefore $\hat{R} \gg 1$. This is a clear failure of convergence and confirms that the step size $s$ is a critical tuning parameter.
+
+```{r r-hat-plot, fig.width=11, fig.height=4.8, fig.align='center'}
+par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+
+# Left panel: full range (shows the spike at s close to 0)
+plot(s_grid, rhats,
+     type = "b", pch = 20, cex = 0.7,
+     col  = "#2166AC", lwd = 2,
+     xlab = "s  (proposal std dev)",
+     ylab = expression(hat(R)),
+     main = "Full range  (s in [0.001, 1])",
+     cex.lab = 1.1, cex.main = 1.0)
+abline(h = 1.05, col = "#D6604D", lty = 2, lwd = 2)    # R-hat = 1.05 threshold
+abline(h = 1.00, col = "#1A7D41", lty = 3, lwd = 1.8)  # R-hat = 1.00 (ideal)
+legend("topright",
+       legend = c(expression(hat(R) ~ "curve"),
+                  expression(hat(R) == 1.05 ~ "(threshold)"),
+                  expression(hat(R) == 1.00 ~ "(ideal)")),
+       col = c("#2166AC", "#D6604D", "#1A7D41"),
+       lty = c(1, 2, 3), lwd = c(2, 2, 1.8),
+       cex = 0.9, bty = "n")
+
+# Right panel: zoomed to R-hat <= 5 to see threshold crossing clearly
+plot(s_grid, rhats,
+     type = "b", pch = 20, cex = 0.7,
+     col  = "#2166AC", lwd = 2,
+     ylim = c(0.9, 5),
+     xlab = "s  (proposal std dev)",
+     ylab = expression(hat(R)),
+     main = expression(paste("Zoomed  (", hat(R), " <= 5)")),
+     cex.lab = 1.1, cex.main = 1.0)
+abline(h = 1.05, col = "#D6604D", lty = 2, lwd = 2)
+abline(h = 1.00, col = "#1A7D41", lty = 3, lwd = 1.8)
+if (length(converge_entries) > 0) {
+  abline(v = s_conv, col = "grey50", lty = 3, lwd = 1.5)  # first convergence point
+}
+legend("topright",
+       legend = c(expression(hat(R) ~ "curve"),
+                  expression(hat(R) == 1.05 ~ "(threshold)"),
+                  expression(hat(R) == 1.00 ~ "(ideal)"),
+                  sprintf("First convergence s = %.3f", s_conv)),
+       col = c("#2166AC", "#D6604D", "#1A7D41", "grey50"),
+       lty = c(1, 2, 3, 3), lwd = c(2, 2, 1.8, 1.5),
+       cex = 0.9, bty = "n")
+
+par(mfrow = c(1, 1))
+
+```
+
+**Reading the plots:**  
+The left panel shows the dramatic spike in $\hat{R}$ for tiny $s$ values — the chain barely moves so the four chains never mix. As $s$ grows, $\hat{R}$ falls sharply. The right panel zooms in to show the exact crossing of the 1.05 threshold.
+
+Two key observations:
+
+1. **Very small $s$** (left edge of the plot): $\hat{R}$ is extremely large because each chain is trapped near its starting value. The step is so tiny the chain makes almost no progress in 2,000 iterations.
+
+2. **Moderate $s$** (right portion of the plot): $\hat{R}$ drops close to 1.0, indicating all four chains have converged to the same distribution. This confirms that the choice of $s = 1$ in Part 1(a) is well within the convergence zone.
+
+**Interpretation:**
+
+At s = 0.001, $\hat{R} \approx 151$ — no convergence.  
+As s grows, chains mix and $\hat{R}$ drops sharply, falling below 1.05 at **s ≈ 0.191**.  
+For $s \gtrsim 0.2$ the algorithm converges reliably, confirming that s = 1 (used in Part 1a)
+is a well-chosen setting.
+
+**Overall takeaway:**  
+The Random Walk Metropolis algorithm successfully recovers the Laplace distribution when $s$ is chosen appropriately. The Gelman-Rubin diagnostic provides a rigorous, quantitative way to verify this — and reveals that $s$ must be large enough to allow the chain to move freely, but the exact value is not critical once it clears the convergence threshold.
